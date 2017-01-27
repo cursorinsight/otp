@@ -205,7 +205,7 @@ sync_dacs(Appls) ->
     Res.
   
 introduce_me(Nodes, Appls) ->
-    Msg = {dist_ac_new_node, ?vsn, node(), Appls, []},
+    Msg = {dist_ac_new_node_req, ?vsn, node(), Appls, []},
     filter(fun(Node) ->
 		   %% This handles nodes without DACs
 		   case rpc:call(Node, erlang, whereis, [?DIST_AC]) of
@@ -226,7 +226,18 @@ wait_dacs([Node | Nodes], KnownNodes, Appls, RStarted) ->
 	%% older versions of the protocol.  As we don't have any older
 	%% versions (that are supposed to work with this version), we
 	%% don't handle version mismatch here.
-	{dist_ac_new_node, _Vsn, Node, HisAppls, HisStarted} ->
+ 	{dist_ac_new_node_req, _Vsn, OtherNode, HisAppls, HisStarted} ->
+ 	    MyStarted = zf(fun(Appl) when Appl#appl.id == local ->
+ 				   {true, {node(), Appl#appl.name}};
+ 			      (_) ->
+ 				   false
+ 			   end, Appls),
+ 	    {?DIST_AC, OtherNode} ! {dist_ac_new_node_resp, ?vsn, node(), Appls, MyStarted},
+ 	    NAppls = dist_merge(Appls, HisAppls, OtherNode),
+ 	    NRStarted = RStarted ++ HisStarted,
+ 	    monitor_node(Node, false),
+ 	    wait_dacs([Node|Nodes], KnownNodes, NAppls, NRStarted);
+	{dist_ac_new_node_resp, _Vsn, Node, HisAppls, HisStarted} ->
 	    monitor_node(Node, false),
 	    NRStarted = RStarted ++ HisStarted,
 	    NAppls = dist_merge(Appls, HisAppls, Node),
@@ -501,14 +512,14 @@ handle_info({ac_application_stopped, AppName}, S) ->
 %% A new node gets running.
 %% Send him info about our started distributed applications.
 %%-----------------------------------------------------------------
-handle_info({dist_ac_new_node, _Vsn, Node, HisAppls, []}, S) ->
+handle_info({dist_ac_new_node_req, _Vsn, Node, HisAppls, []}, S) ->
     Appls = S#state.appls,
     MyStarted = zf(fun(Appl) when Appl#appl.id =:= local ->
 			   {true, {node(), Appl#appl.name}};
 		      (_) ->
 			   false
 		   end, Appls),
-    {?DIST_AC, Node} ! {dist_ac_new_node, ?vsn, node(), Appls, MyStarted},
+    {?DIST_AC, Node} ! {dist_ac_new_node_resp, ?vsn, node(), Appls, MyStarted},
     NAppls = dist_merge(Appls, HisAppls, Node),
     {noreply, S#state{appls = NAppls, known = [Node | S#state.known]}};
 
@@ -585,14 +596,17 @@ handle_info({dist_ac_weight, Name, Weight, Node}, S) ->
 		    {?DIST_AC, Node} ! {dist_ac_weight, Name, 0, node()},
 		    {noreply, S};
 		undefined -> 
+		    {?DIST_AC, Node} ! {dist_ac_weight, Name, undefined, node()},
 		    {noreply, 
 		     S#state{tmp_locals = [{Name, Weight, Node} |
 					   S#state.tmp_locals]}};
 		{takeover, _} -> 
+		    {?DIST_AC, Node} ! {dist_ac_weight, Name, undefined, node()},
 		    {noreply, 
 		     S#state{tmp_locals = [{Name, Weight, Node} |
 					   S#state.tmp_locals]}};
 		{failover, _} -> 
+		    {?DIST_AC, Node} ! {dist_ac_weight, Name, undefined, node()},
 		    {noreply, 
 		     S#state{tmp_locals = [{Name, Weight, Node} |
 					   S#state.tmp_locals]}};
@@ -604,6 +618,7 @@ handle_info({dist_ac_weight, Name, Weight, Node}, S) ->
 		    {noreply,  S#state{tmp_weights = NTWs}}
 	    end;
 	_ ->
+	    {?DIST_AC, Node} ! {dist_ac_weight, Name, undefined, node()},
 	    {noreply, 
 	     S#state{tmp_locals = [{Name, Weight, Node} | S#state.tmp_locals]}}
     end;
@@ -1114,6 +1129,8 @@ check_running(Name, #state{remote_started = RStarted,
 	    end
     end.
 
+find_alive_node([{undefined, _Node} | Nodes], AliveNodes) ->
+    find_alive_node(Nodes, AliveNodes);
 find_alive_node([{_, Node} | Nodes], AliveNodes) ->
     case lists:member(Node, AliveNodes) of
 	true -> {ok, Node};
