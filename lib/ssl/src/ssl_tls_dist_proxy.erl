@@ -212,6 +212,7 @@ accept_loop(Proxy, world = Type, Listen, Extra) ->
 	{ok, Socket} ->
 	    Opts = get_ssl_options(server),
 	    wait_for_code_server(),
+            wait_for_crypto(),
 	    case ssl:ssl_accept(Socket, Opts) of
 		{ok, SslSocket} ->
 		    PairHandler =
@@ -261,6 +262,13 @@ wait_for_code_server() ->
 	Pid when is_pid(Pid) ->
 	    ok
     end.
+wait_for_crypto() ->
+    try crypto:supports() of
+        _-> ok
+    catch _:_ ->
+            timer:sleep(50),
+            wait_for_crypto()
+    end.
 
 try_connect(Port) ->
     case gen_tcp:connect({127,0,0,1}, Port, [{active, false}, {packet,?PPRE}, nodelay()]) of
@@ -273,6 +281,8 @@ try_connect(Port) ->
 setup_proxy(Driver, Ip, Port, Parent) ->
     process_flag(trap_exit, true),
     Opts = connect_options(get_ssl_options(client)),
+    wait_for_code_server(),
+    wait_for_crypto(),
     case ssl:connect(Ip, Port, [{active, true}, binary, {packet,?PPRE}, nodelay(),
                                 Driver:family()] ++ Opts) of
 	{ok, World} ->
